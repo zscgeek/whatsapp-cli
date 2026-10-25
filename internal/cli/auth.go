@@ -25,9 +25,17 @@ var authLoginCmd = &cobra.Command{
 	Long: `Display a QR code in the terminal. Scan it with WhatsApp on your phone
 (Settings → Linked Devices → Link a Device) to authenticate.
 
-After authentication, an initial sync will start to download your message history.`,
+After authentication, an initial sync will start to download your message history.
+
+By default WhatsApp only shares recent history with a newly linked device. Use
+--full-history to ask the phone for its full message history instead (as
+WhatsApp Desktop does). This only applies when linking: run 'whatsapp auth
+logout' first if already authenticated. The phone keeps sending history after
+login returns; run 'whatsapp sync --follow' until the message count settles.`,
 	RunE: runAuthLogin,
 }
+
+var authLoginFullHistory bool
 
 var authLogoutCmd = &cobra.Command{
 	Use:   "logout",
@@ -46,6 +54,8 @@ func init() {
 	authCmd.AddCommand(authLoginCmd)
 	authCmd.AddCommand(authLogoutCmd)
 	authCmd.AddCommand(authStatusCmd)
+
+	authLoginCmd.Flags().BoolVar(&authLoginFullHistory, "full-history", false, "Request full message history from the phone when linking")
 }
 
 func runAuthLogin(cmd *cobra.Command, args []string) error {
@@ -64,6 +74,13 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 	client, err := whatsapp.New(db, GetStoreDir(), IsVerbose(), nil)
 	if err != nil {
 		return fmt.Errorf("failed to create client: %w", err)
+	}
+
+	if authLoginFullHistory {
+		if client.IsAuthenticated() {
+			return fmt.Errorf("--full-history only applies when linking a new device; run 'whatsapp auth logout' first")
+		}
+		whatsapp.RequestFullHistorySync()
 	}
 
 	// Set up signal handling
@@ -102,6 +119,9 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 		// User interrupted
 	case <-client.SyncComplete:
 		fmt.Fprintln(os.Stderr, "Initial sync complete.")
+		if authLoginFullHistory {
+			fmt.Fprintln(os.Stderr, "Full history may still be arriving; run 'whatsapp sync --follow' until the message count settles.")
+		}
 	case <-time.After(syncTimeout):
 		fmt.Fprintln(os.Stderr, "Initial sync timeout reached. You can continue syncing with 'whatsapp sync'.")
 	}
