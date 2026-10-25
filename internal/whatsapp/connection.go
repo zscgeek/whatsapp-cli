@@ -21,6 +21,10 @@ func (c *Client) registerHandlers() {
 			c.handleMessage(v)
 		case *events.HistorySync:
 			result := c.handleHistorySync(v)
+			select {
+			case c.HistoryActivity <- struct{}{}:
+			default:
+			}
 			if v.Data != nil && v.Data.GetSyncType() == waHistorySync.HistorySync_ON_DEMAND {
 				c.completeBackfillRequest(result)
 			}

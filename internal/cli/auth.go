@@ -30,8 +30,9 @@ After authentication, an initial sync will start to download your message histor
 By default WhatsApp only shares recent history with a newly linked device. Use
 --full-history to ask the phone for its full message history instead (as
 WhatsApp Desktop does). This only applies when linking: run 'whatsapp auth
-logout' first if already authenticated. The phone keeps sending history after
-login returns; run 'whatsapp sync --follow' until the message count settles.`,
+logout' first if already authenticated. Login then stays connected until the
+phone stops sending history (5 minutes idle, 2 hours at most); keep WhatsApp
+open on the phone meanwhile.`,
 	RunE: runAuthLogin,
 }
 
@@ -119,11 +120,17 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 		// User interrupted
 	case <-client.SyncComplete:
 		fmt.Fprintln(os.Stderr, "Initial sync complete.")
-		if authLoginFullHistory {
-			fmt.Fprintln(os.Stderr, "Full history may still be arriving; run 'whatsapp sync --follow' until the message count settles.")
-		}
 	case <-time.After(syncTimeout):
 		fmt.Fprintln(os.Stderr, "Initial sync timeout reached. You can continue syncing with 'whatsapp sync'.")
+	}
+
+	// The phone sends full history in later chunks and gives up ("couldn't
+	// finish syncing") if the device disconnects, so stay connected until it
+	// goes quiet.
+	if authLoginFullHistory && ctx.Err() == nil {
+		fmt.Fprintf(os.Stderr, "Waiting for full history from your phone (keep WhatsApp open on Wi-Fi). Stops after %s without new history.\n", fullHistoryIdleTimeout)
+		waitForHistoryIdle(ctx, client.HistoryActivity, fullHistoryIdleTimeout, fullHistoryMaxWait)
+		fmt.Fprintln(os.Stderr, "Full history sync finished or went quiet. Run 'whatsapp sync --follow' if more is expected.")
 	}
 
 	client.Disconnect()
@@ -134,6 +141,39 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 		"user":   user,
 		"device": device,
 	}, fmt.Sprintf("Authenticated as %s (device %d)", user, device))
+}
+
+const (
+	fullHistoryIdleTimeout = 5 * time.Minute
+	fullHistoryMaxWait     = 2 * time.Hour
+)
+
+// waitForHistoryIdle blocks until no activity arrives for idle, maxWait
+// elapses, or ctx is cancelled.
+func waitForHistoryIdle(ctx context.Context, activity <-chan struct{}, idle, maxWait time.Duration) {
+	idleTimer := time.NewTimer(idle)
+	defer idleTimer.Stop()
+	deadline := time.NewTimer(maxWait)
+	defer deadline.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline.C:
+			return
+		case <-idleTimer.C:
+			return
+		case <-activity:
+			if !idleTimer.Stop() {
+				select {
+				case <-idleTimer.C:
+				default:
+				}
+			}
+			idleTimer.Reset(idle)
+		}
+	}
 }
 
 func runAuthLogout(cmd *cobra.Command, args []string) error {
